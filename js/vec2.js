@@ -31,7 +31,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE. */
 "use strict";
 
 
-define(["Squishy"], function() {        
+define([], function() {        
     /**
      * Global axis enum.
      */
@@ -59,10 +59,7 @@ define(["Squishy"], function() {
      * @returns {vec2} a new 2D vector
      */
     vec2.create = function() {
-        var out = new Vec2Type(2);
-        out[0] = 0;
-        out[1] = 0;
-        return out;
+        return vec2.fromValues(0, 0);
     };
     
     /**
@@ -77,10 +74,7 @@ define(["Squishy"], function() {
      * @returns {vec2} a new 2D vector
      */
     vec2.clone = function(a) {
-        var out = new Vec2Type(2);
-        out[0] = a[0];
-        out[1] = a[1];
-        return out;
+        return vec2.fromValues(a[0], a[1]);
     };
 
     /**
@@ -94,6 +88,7 @@ define(["Squishy"], function() {
         var out = new Vec2Type(2);
         out[0] = x;
         out[1] = y;
+        out.toString = function() { return vec2.str(this); };
         return out;
     };
 

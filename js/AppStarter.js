@@ -19,19 +19,8 @@ require.config({
         //Box2d: 'lib/box2djs',
 
         Util: 'js/util',
-        Squishy: 'lib/squishy/squishy',
-        localizer: 'lib/localizer',
 
-        JS: 'js',
-        UI: 'js/ui',
-
-        Jquery_root: 'lib/jquery',
-        jquery: 'lib/jquery/jquery-2.1.0.min',
-    },
-    shim: {
-        jquery: {
-            exports: '$'
-        }
+        JS: 'js'
     }
 });
 
@@ -40,25 +29,16 @@ require.config({
  * @const
  */
 var dependencies = [
-    // JQuery
-    'jquery', 
-
     // Other UI elements
     'Lib/mousetrap.min',
 
     // Math utilities
-    'JS/vec2',
-
-    // Other utilities
-    'Squishy',
-    'localizer',
-    'Lib/GameAI'
-    //'Lib/CodeContracts'
+    'JS/vec2'
 ];
 
 
-// load game and initialize UI
-require(dependencies, function (jquery, mousetrap, vec2, squishy) {
+// load world and initialize UI
+require(dependencies, function (mousetrap, vec2) {
 
     // #######################################################################################################################
     // Shapes & Surfaces
@@ -68,7 +48,9 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
      * @const
      */
     var ShapeType = squishy.makeEnum([
-        'AABB'
+        'AABB',
+        'Disk',
+        'Line'
     ]);
 
     /**
@@ -80,28 +62,20 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
     ]);
 
     /**
-     * Defines all currently implemented types of objects.
-     * @const
-     */
-    var ObjectType = squishy.makeFlagEnum([
-        'RigidBody', 'Movable'
-    ]);
-
-    /**
      * Simple AABB storage class.
      * @constructor
      */
-    var AABB = squishy.createClass(
-        function(min, max) {
-            this.min = min;
-            this.max = max;
-            this.dimensions = vec2.subtract(vec2.create(), max, min);
-        },{
-            getArea: function () {
-                return this.dimensions[Axis.X] * this.dimensions[Axis.Y];
-            },
-        }
-    );
+     var AABB = squishy.createClass(function(min, max) {
+        // ctor
+        this.min = min;
+        this.max = max;
+        this.dimensions = vec2.subtract(vec2.create(), max, min);
+    },{
+        // methods
+        getArea: function () {
+            return this.dimensions[Axis.X] * this.dimensions[Axis.Y];
+        },
+    });
     
     /**
      * A simple oriented 2D surface.
@@ -127,23 +101,22 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
      * @param {Vec2} to Second endpoint of the line segment.
      * @param {Vec2} normal Surface normal, pointing outwards.
      */
-    var LineSegment = squishy.extendClass(Surface,
-        function (from, to, normal, dontNormalizeNormal) {
-            this._super();
-            
-            if (!dontNormalizeNormal) {
-                vec2.normalize(normal, normal);
-            }
-            
-            this.from = from;
-            this.to = to;
-            this.normal = normal;
-            this.delta = vec2.subtract(vec2.create(), this.to, this.from);        // the vector pointing from 'from' to 'to'
-        }, {
-            // methods
-            getSurfaceType: function() { return SurfaceType.LineSegment; },
+    var LineSegment = squishy.extendClass(Surface, function (from, to, normal, dontNormalizeNormal) {
+        // ctor
+        this._super();
+        
+        if (!dontNormalizeNormal) {
+            vec2.normalize(normal, normal);
         }
-    );
+        
+        this.from = from;
+        this.to = to;
+        this.normal = normal;
+        this.delta = vec2.subtract(vec2.create(), this.to, this.from);        // the vector pointing from 'from' to 'to'
+    }, {
+        // methods
+        getSurfaceType: function() { return SurfaceType.LineSegment; },
+    });
 
     // TODO: General line segments
     // TODO: Curved surfaces
@@ -154,27 +127,28 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
      * @interface
      */
     var Shape = squishy.createClass(
-        function() {
+        function(def) {
         },{
             // methods
             getShapeType: squishy.abstractMethod(),
-            getSurfaces: squishy.abstractMethod(),
             getArea: squishy.abstractMethod(),
             containsPoint: squishy.abstractMethod(),
+
+            //getSurfaces: squishy.abstractMethod(),
         }
     );
     
-    /**
-     *
-     * @constructor
-     * @implements {Shape}
-     */
-    var AABBShape = squishy.extendClass(Shape,
-        function (minVertex, maxVertex) {
-            this._super();
+    var Shapes = {
+        /**
+         * @constructor
+         * @implements {Shape}
+         */
+        AABB: squishy.extendClass(Shape, function (def) {
+            // ctor
+            this._super(def);
         
-            this.min = minVertex;
-            this.max = maxVertex;
+            this.min = def.min;
+            this.max = def.max;
             this.dimensions = vec2.subtract(vec2.create(), this.max, this.min);
             
             // build line segments to outline the box
@@ -237,51 +211,179 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                 var index = xAxis + (minSide * 2);
                 return this.surfaces[index];
             }
-        }
-    );
+        }),
+
+        /**
+         * @constructor
+         * @implements {Shape}
+         */
+        Disk: squishy.extendClass(Shape, function (def) {
+            // ctor
+            this._super(def);
+        
+            this.center = def.center;
+            this.radius = def.radius;
+        },{
+            // methods
+
+            /**
+             * Return the type of this shape.
+             */
+            getShapeType: function () {
+                return ShapeType.Disk;
+            },
+
+            /**
+             * Area of a disk
+             */
+            getArea: function () {
+                return Math.PI * this.radius * this.radius;
+            },
+
+            /**
+             * 
+             */
+            containsPoint: function(point) {
+                // point must be contained by disk, i.e. distance must be <= radius
+                var distSq = vec2.squaredDistance(this.center, point);
+                return distSq <= this.radius * this.radius;
+            }
+        }),
+
+
+        /**
+         * @constructor
+         * @implements {Shape}
+         */
+        Line: squishy.extendClass(Shape, function (def) {
+            // ctor
+            this._super(def);
+
+            console.assert(vec2.isValid(def.v1));
+            console.assert(vec2.isValid(def.v2));
+            console.assert(def.width > 0);
+        
+            this.v1 = def.v1;
+            this.v2 = def.v2;
+            this.width = def.width || 0.1;
+            this._diff = vec2.create();     // pre-allocate this guy
+        },{
+            // methods
+
+            /**
+             * Return the type of this shape.
+             */
+            getShapeType: function () {
+                return ShapeType.Line;
+            },
+
+            /**
+             * Area of a thick line is length x width
+             */
+            getArea: function () {
+                vec2.subtract(this._diff, this.v2, this.v1);
+                var len = vec2.length(this._diff);
+                return len * this.width;
+            },
+
+            /**
+             * @see http://stackoverflow.com/a/1501725/2228771
+             */
+            containsPoint: function(point) {
+                // determine if point is contained by OBB that is represented by this "thick line"
+                function sqr(x) { return x * x }
+                function distToSegmentSquared(p, v, w) {
+                    var l2 = vec2.squaredDistance(v, w);
+                    if (l2 == 0) return vec2.squaredDistance(p, v);
+
+                    var t = ((p[0] - v[0]) * (w[0] - v[0]) + (p[1] - v[1]) * (w[1] - v[1])) / l2;
+                    if (t < 0) return vec2.squaredDistance(p, v);       // in front of line segment
+                    if (t > 1) return vec2.squaredDistance(p, w);       // behind line segment
+                    return vec2.squaredDistance(p, {                    // orthogonal to line segment
+                        x: v[0] + t * (w[0] - v[0]),
+                        y: v[1] + t * (w[1] - v[1])
+                    });
+                }
+                var distSq = distToSegmentSquared(point, this.v1, this.v2);
+                var dist = Math.sqrt(distSq);
+
+                // TODO: Consider adding some epsilon to check to make sure, very thin lines can also be selected
+                return dist <= this.width;      // must be inside width
+            }
+        })
+    };
 
 
     // #######################################################################################################################
-    // RigidBody class
+    // Objects
+
+    /**
+     * Defines all currently implemented types of objects.
+     * @const
+     */
+    var ObjectType = squishy.makeFlagEnum([
+        'RigidBody',
+        'Movable'
+    ]);
+
+    var Object = squishy.createClass(function() {
+        // ctor
+    }, {
+        // methods
+        getShape: squishy.abstractMethod(),
+        getObjectType: squishy.abstractMethod(),
+
+        isObjectType: function(objectType) { return this.getObjectType() & objectType; },
+
+        toString: function() { return (!!this.name && (this.name + ' ') || '') + this.objectId; },
+    });
+
+    var Objects = {};
+
+    // ###############################################
+    // RigidBody object
 
     /**
      * Creates a new static RigidBody.
      * @constructor
      */
-    var RigidBody = squishy.createClass(
-        function (objectDefinition) {
-            // copy all parameters into object
-            squishy.clone(objectDefinition, false, this);
+    Objects.RigidBody = squishy.extendClass(Object, function (objectDefinition) {
+        // ctor
+        this._super();
 
-            // objects must have a position, shape and stepHeight
-            squishy.assert(vec2.isValid(this.position), 'position is invalid.');
-            squishy.assert(this.shape, 'shape was not defined.');
-        }, {
-            // methods
-            getObjectType: function() { return ObjectType.RigidBody; },
-            
-            isObjectType: function(objectType) { return this.getObjectType() & objectType; },
-            
-            getShape: function () { return this.shape; },
+        // copy all parameters into object
+        squishy.clone(objectDefinition, false, this);
 
-            /**
-             * 
-             */
-            canMove: function () { return false; },
-            
-            /**
-             * Test whether this object contains the given point in world coordinates.
-             */
-            containsPoint: function(worldPoint) {
-                // Transform to object-local coordinate system.
-                // Currently, only translations are supported, so a change of coordinate systems can only change the origin.
-                var localPoint = vec2.subtract(worldPoint, worldPoint, this.position);
-                return this.shape.containsPoint(localPoint);
-            },
-            
-            toString: function() { return this.objectId; }
+        // objects must have a position, shape and stepHeight
+        squishy.assert(vec2.isValid(this.position), 'position is invalid.');
+        squishy.assert(this.shape, 'shape was not defined.');
+
+        // renderConfig can be used to override default rendering options
+        this.renderConfig = this.renderConfig || {};
+    }, {
+        // methods
+        getObjectType: function() { return ObjectType.RigidBody; },
+        
+        isObjectType: function(objectType) { return this.getObjectType() & objectType; },
+        
+        getShape: function () { return this.shape; },
+
+        /**
+         * 
+         */
+        canMove: function () { return false; },
+        
+        /**
+         * Test whether this object contains the given point in world coordinates.
+         */
+        containsPoint: function(worldPoint) {
+            // TODO: General affine transformations
+            // Transform to object-local coordinate system.
+            // Currently, only translations are supported, so the object-local coordinate system can only vary in origin.
+            var localPoint = vec2.subtract(worldPoint, worldPoint, this.position);      // translate
+            return this.shape.containsPoint(localPoint);
         }
-    );
+    });
 
 
     // #######################################################################################################################
@@ -292,7 +394,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
      *
      * @constructor
      */
-    var Movable = squishy.extendClass(RigidBody,
+    Objects.Movable = squishy.extendClass(Objects.RigidBody,
         function (objectDefinition) {
             this._super(objectDefinition);
 
@@ -451,19 +553,17 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
 
     /**
      * Creates a new Pulley world.
-     * This handles the physical aspect of the game, especially movement.
      *
      * @constructor
      */
     var PulleyWorld = squishy.createClass(
         function (config) {
-            config.Dt = config.Dt || .06;            // set default dt
+            config.dt = config.dt || .06;            // set default dt
             
             // check parameter validity
             squishy.assert(config, 'config is undefined');
-            squishy.assert(config.Dt > 0, 'config.Dt is invalid'); // must be positive
-            squishy.assert(vec2.isValid(config.Gravity));
-            squishy.assert(config.WorldBox && config.WorldBox.getArea() > 0, 'config.WorldBox is invalid');
+            squishy.assert(config.dt > 0, 'config.dt is invalid'); // must be positive
+            squishy.assert(vec2.isValid(config.gravity), 'config.gravity is invalid');
 
             this.lastObjectId = 0; // running id for new objects
             this.currentIteration = 1;
@@ -504,6 +604,9 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                  */
                 objectGone: squishy.createEvent(this),
             };
+
+            // TODO: Bad bad bad!
+            this._tmp = vec2.create();
         }, {
             // methods
 
@@ -526,7 +629,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                     this.movables[obj.objectId] = obj;
                 }
                 
-                console.log('Added object #' + obj.objectId + ' of type: ' + obj.getObjectType());
+                console.log('Added object #' + obj.objectId + ' of type: ' + obj.getObjectType() + ' at ' + obj.position);
 
                 // fire event
                 this.events.objectAdded.fire(obj);
@@ -583,7 +686,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                 if (this.running) return;
                 //this.continueLoop();
                 this.running = true;
-                //this.loopTimer = setInterval(function() { this.advanceTime(); }.bind(this), this.config.Dt * 1000);
+                //this.loopTimer = setInterval(function() { this.advanceTime(); }.bind(this), this.config.dt * 1000);
             },
             
             continueLoop: function() {
@@ -614,11 +717,11 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
              */
             advanceTime: function() {
                 var dt = this.getDtSinceLastStep();
-                while (dt > this.config.Dt) {
-                    dt -= this.config.Dt;
+                while (dt > this.config.dt) {
+                    dt -= this.config.dt;
                     this.step();
                 }
-                return dt/this.config.Dt;
+                return dt/this.config.dt;
             },
 
             /**
@@ -627,55 +730,14 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
             step: function (dt) {
                 // update iteration count & compute actual time passed
                 ++this.currentIteration;
-                var dt = dt || this.config.Dt;
+                var dt = dt || this.config.dt;
                 this.lastStepTime += dt * 1000;  // millis
                 
                 // update velocity and position
-                squishy.forEachOwnProp(this.movables, function (objId, obj) {
-                    vec2.copy(obj.lastPosition, obj.position);                  // set lastPosition
-                    obj.onStep(dt);
-                    this.integrateStep(obj, dt);
-                }, this);
+                this.stepIntegrate(dt);
                 
                 // run event listeners
                 this.events.step.fire(dt);
-            },
-            
-            // TODO: Bad bad bad!
-            _tmp: vec2.create(),
-            
-            /**
-             * Compute new linear velocities and positions.
-             */
-            integrateStep: function (obj, dt) {
-                // Linear integration: We do not support angular velocity or rotation, which makes things a whole lot easier.
-                // We first integrate acceleration to update velocity, then integrate velocity to get new position.
-                // This is called semi-implicit Euler integration: It is fast, simple and inaccurate (but good enough for linear integration in games).
-                vec2.add(this._tmp, obj.acceleration, this.config.Gravity);               // add gravity
-                vec2.scaleAndAdd(obj.velocity, obj.velocity, this._tmp, dt);              // update velocity
-                vec2.scale(obj.lastPositionDelta, obj.velocity, dt);
-                
-                // add step height, so object can just 'float' over small obstacles, and walk up stairs
-                // if (!obj.isFalling()) {
-                    // vec2.add(obj.position, obj.position, obj.stepHeight);
-                    // vec2.add(obj.lastPositionDelta, obj.lastPositionDelta, obj.stepHeight); 
-                // }
-                vec2.add(obj.position, obj.position, obj.lastPositionDelta);                 // update position
-            },
-            
-            /**
-             * @see http://blog.allanbishop.com/box-2d-2-1a-tutorial-part-10-fixed-time-step/
-             */
-            getRenderPosition: function(obj, timeRatio) {
-                if (!obj.isObjectType(ObjectType.Movable)) return obj.position;
-                
-                // interpolate between the previous two positions
-                var tmp = this._tmp;            // TODO: Bad!
-                
-                vec2.subtract(tmp, obj.position, obj.lastPosition);
-                vec2.scaleAndAdd(tmp, obj.lastPosition, tmp, timeRatio);
-                
-                return tmp;
             },
         }
     );
@@ -819,10 +881,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
 
     // #######################################################################################################################
     // Commands have a name, description and a callback
-    
-    // TODO: Localization of names and descriptions
-    // TODO: Proper parameter support for commands
-    
+
     /**
      * @constructor
      */
@@ -880,7 +939,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
     /**
      * @const
      */
-    var gameContainerCSS = {
+    var worldContainerCSS = {
         'position': 'absolute',
         'left': '0px',
         'right': '0px',
@@ -938,13 +997,15 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
      * @constructor
      */
     var PulleyWorldUI = squishy.createClass(
-        function (containerEl, DebugDrawEnabled, game, commandMap) {
+        function (world, containerEl, DebugDrawEnabled, commandMap) {
             // set object properties
             this.containerEl = containerEl;
             this.DebugDrawEnabled = DebugDrawEnabled;
-            this.game = game;
-            this.world = game.world;
+            this.world = world;
             this.selected = {};
+
+            // TODO: Bad bad bad!
+            this._tmp = vec2.create();
 
             // setup everything
             this.commands = commandMap || {};
@@ -952,7 +1013,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
             this.setupUI();
 
             // start render loop
-            this.requestRendering();
+            this.requestRendering(true);
         }, {
             // ###################################################################################################
             // UI Setup
@@ -961,8 +1022,8 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
              * @sealed
              */
             setupUI: function () {
-                // style game container
-                this.containerEl.css(gameContainerCSS);
+                // style world container
+                this.containerEl.css(worldContainerCSS);
 
                 // create toolbar
                 // TODO: Proper toolbar
@@ -996,7 +1057,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                 // always keep the same aspect ratio
                 $(window).resize(function() {
                     this.fixAspectRatio();
-                    this.requestRendering();       // request a re-draw, in case rendering loop is not active
+                    this.requestRendering(true);       // request a re-draw, in case rendering loop is not active
                 }.bind(this));
 
                 // mouse interaction
@@ -1024,6 +1085,24 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
             // ###################################################################################################
             // Rendering
 
+            getRenderer: function(shapeType) {
+                return Renderers.byType[shapeType];
+            },
+            
+            /**
+             * @see http://blog.allanbishop.com/box-2d-2-1a-tutorial-part-10-fixed-time-step/
+             */
+            getRenderPosition: function(obj, pos, timeRatio) {
+                if (!obj.isObjectType(ObjectType.Movable)) {
+                    vec2.copy(pos, obj.position);
+                }
+                else {
+                    // interpolate between the previous two positions
+                    vec2.subtract(pos, obj.position, obj.lastPosition);
+                    vec2.scaleAndAdd(pos, obj.lastPosition, pos, timeRatio);
+                }
+            },
+
             /**
              * @see http://stackoverflow.com/questions/2142535/how-to-clear-the-canvas-for-redrawing
              */
@@ -1045,7 +1124,9 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
             /**
              * Request _render to be called again soon.
              */
-            requestRendering: function() {
+            requestRendering: function(force) {
+                if (!force && !this.world.isRunning()) return;
+
                 if (!this.renderTimer) this.renderTimer = requestAnimationFrame(this._render.bind(this));
             },
 
@@ -1060,6 +1141,8 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
 
                 // clear canvas
                 this.clear();
+
+                var renderPos = vec2.create();
                 
                 // TODO: Kd-tree, BVI etc for faster finding of rendered objects
                 for (var objId in this.world.objects) {
@@ -1068,63 +1151,21 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                     // TODO: Check if object intersects with viewport
                     var shape = obj.getShape();
                     var shapeType = shape.getShapeType();
-                    switch (shapeType) {
-                        case ShapeType.AABB:
-                            var pos = this.world.getRenderPosition(obj, timeRatio);        // compute a more accurate guess of current position
-                            this._renderAABB(context, tmp, obj, pos, shape);
-                            if (this.DebugDrawEnabled) {
-                                this._debugDrawAABB(context, tmp, obj, pos, shape);
-                            }
-                            break;
-                        default:
-                            throw new Error('Shape not yet supported: ' + ShapeTypes.toString(shapeType));
+                    var objectRenderer = this.getRenderer(shapeType);
+                    if (!objectRenderer) {
+                        throw new Error('Shape has no renderer: ' + ShapeType.toString(shapeType));
+                    }
+
+                    this.getRenderPosition(obj, renderPos, timeRatio);        // compute a more accurate guess of current position
+                    objectRenderer.draw(this, context, renderPos, obj, shape);
+                    if (this.DebugDrawEnabled) {
+                        // draw some additional information
+                        objectRenderer.debugDraw(this, context, renderPos, obj, shape);
                     }
                 }
 
                 this.renderTimer = null;
-                this.requestRendering();
-            },
-            
-            /**
-             * Render an AABB shape.
-             */
-            _renderAABB: function(context, from, obj, pos, shape) {
-                //if (obj.velocity)
-                    //console.log(pos);
-                vec2.copy(from, pos);
-                vec2.add(from, from, shape.min);
-
-                // draw filled rectangle with a border
-                // see http://www.html5canvastutorials.com/tutorials/html5-canvas-rectangles/
-
-                context.beginPath();
-                context.fillStyle = '#4444EE';
-                context.fillRect(from[Axis.X], from[Axis.Y], shape.dimensions[Axis.X], shape.dimensions[Axis.Y]);
-                // context.strokeStyle = '#4444CC';        // dark blue
-                // context.stroke();
-            },
-            
-            /**
-             * Visualize stuff for debugging physics.
-             */
-            _debugDrawAABB: function(context, from, obj, pos, shape) {
-                context.lineWidth = .01;                // TODO: Compute from world size
-                context.strokeStyle = '#AA1111';        // dark red
-                
-                if (this.isSelected(obj)) {
-                    // draw selection
-                    context.beginPath();
-                    context.fillStyle = '#AA4444';
-                    context.strokeRect(from[Axis.X], from[Axis.Y], shape.dimensions[Axis.X], shape.dimensions[Axis.Y]);
-                }
-                    
-                // draw surface normals
-                shape.getSurfaces().forEach(function(line) {
-                    var normal = vec2.scale(vec2.create(), line.normal, 10);
-                    vec2.add(from, pos, line.from);
-                    vec2.scaleAndAdd(from, from, line.delta, .5);
-                    //context.drawArrow(from, normal, 5);
-                });
+                this.requestRendering(false);
             },
             
             
@@ -1232,9 +1273,9 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
             
             _checkObjectOrObjectId: function(objectOrObjectId) {
                 var obj;
-                if (objectOrObjectId instanceof RigidBody) obj = objectOrObjectId;
-                else obj = this.world[objectOrObjectId];
-                if (!obj) throw new Error('objectOrObjectId is invalid.');
+                if (objectOrObjectId instanceof Objects.RigidBody) obj = objectOrObjectId;
+                else obj = this.world.objects[objectOrObjectId];
+                if (!obj) throw new Error('objectOrObjectId is invalid: ' + objectOrObjectId);
                 return obj;
             },
             
@@ -1268,7 +1309,7 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
                     delete this.selected[obj.objectId];
                 }
                 
-                this.requestRendering();    // things changed, so we need to re-render
+                this.requestRendering(true);    // things changed, so we need to re-render
                 
                 // TODO: Raise event
             }
@@ -1278,48 +1319,296 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
 
 
     // #######################################################################################################################
-    // Setup a simple world & start UI
-    
+    // Renderers
+
+    var RendererConfig = {
+        shapeColor: '#222299',          // dark blue
+        borderColor: '#000000',         // black
+        borderWidth: .01,               // 
+
+        selectedBorderColor: '#AA1111',         // red
+        selectedBorderWidth: .02,               // 
+    };
+
+    var Renderers = {
+        /**
+         * An array of all renderers
+         */
+        list: [
+        {
+            // AABB renderer
+            shape: 'AABB', 
+            draw: function(ui, context, pos, obj, shape) {
+                //if (obj.velocity)
+                    //console.log(pos);
+                vec2.add(pos, pos, shape.min);
+
+                // draw filled rectangle with a border
+                // see http://www.html5canvastutorials.com/tutorials/html5-canvas-rectangles/
+
+                context.beginPath();
+                context.fillStyle = obj.renderConfig.shapeColor || RendererConfig.shapeColor,
+                context.strokeStyle = obj.renderConfig.borderColor || RendererConfig.borderColor;
+                context.lineWidth = obj.renderConfig.borderWidth || RendererConfig.borderWidth;
+                context.strokeRect(pos[Axis.X], pos[Axis.Y], shape.dimensions[Axis.X], shape.dimensions[Axis.Y]);
+                context.fillRect(pos[Axis.X], pos[Axis.Y], shape.dimensions[Axis.X], shape.dimensions[Axis.Y]);
+                
+                if (ui.isSelected(obj)) {
+                    // draw selection
+                    //context.beginPath();
+                    context.lineWidth =  obj.renderConfig.selectedBorderWidth || RendererConfig.selectedBorderWidth;
+                    context.strokeStyle = obj.renderConfig.selectedBorderColor || RendererConfig.selectedBorderColor;
+                    context.strokeRect(pos[Axis.X], pos[Axis.Y], shape.dimensions[Axis.X], shape.dimensions[Axis.Y]);
+                }
+            },
+                
+            /**
+             * Visualize stuff for debugging purposes.
+             */
+            debugDraw: function(ui, context, pos, obj, shape) {
+                context.lineWidth = .02;                // TODO: Compute from world size
+                context.strokeStyle = RendererConfig.selectedColor;
+                    
+                // draw surface normals
+                shape.getSurfaces().forEach(function(line) {
+                    var normal = vec2.scale(vec2.create(), line.normal, 10);
+                    vec2.add(pos, pos, line.from);
+                    vec2.scaleAndAdd(pos, pos, line.delta, .5);
+                    //context.drawArrow(pos, normal, 5);
+                });
+            }
+            // AABB
+        },{
+            // Disk
+            shape: 'Disk',
+            /**
+             * @see http://www.w3schools.com/tags/canvas_arc.asp
+             */
+            draw: function(ui, context, pos, obj, shape) {
+                vec2.add(pos, pos, shape.center);
+
+                context.beginPath();
+                context.arc(pos[Axis.X], pos[Axis.Y], shape.radius, 0, 2 * Math.PI);
+
+                context.fillStyle = obj.renderConfig.shapeColor || RendererConfig.shapeColor,
+                context.fill();
+
+                context.strokeStyle = obj.renderConfig.borderColor || RendererConfig.borderColor;
+                context.lineWidth = obj.renderConfig.borderWidth || RendererConfig.borderWidth;
+                context.stroke();
+                
+                if (ui.isSelected(obj)) {
+                    // draw selection
+                    context.lineWidth =  obj.renderConfig.selectedBorderWidth || RendererConfig.selectedBorderWidth;
+                    context.strokeStyle = obj.renderConfig.selectedBorderColor || RendererConfig.selectedBorderColor;
+                    context.stroke();
+                }
+            },
+
+            /**
+             * Visualize stuff for debugging purposes.
+             */
+            debugDraw: function(ui, context, pos, obj, shape) {
+            }
+
+            // Disk
+        },{
+            // Line
+            shape: 'Line',
+            draw: function(ui, context, pos, obj, shape) {
+                if (ui.isSelected(obj)) {
+                    // draw selection
+                    context.beginPath();
+                    var delta = (obj.renderConfig.selectedBorderWidth || RendererConfig.selectedBorderWidth) / 2;
+                    context.lineWidth = shape.width + delta;
+                    context.strokeStyle = obj.renderConfig.selectedBorderColor || RendererConfig.selectedBorderColor;
+                    context.moveTo(shape.v1[Axis.X] + pos[Axis.X], shape.v1[Axis.Y] + pos[Axis.Y]);
+                    context.lineTo(shape.v2[Axis.X] + pos[Axis.X], shape.v2[Axis.Y] + pos[Axis.Y]);
+                    context.stroke();
+                }
+
+                context.beginPath();
+                context.strokeStyle = obj.renderConfig.borderColor || RendererConfig.borderColor;
+                context.lineWidth = shape.width;
+                context.moveTo(shape.v1[Axis.X] + pos[Axis.X], shape.v1[Axis.Y] + pos[Axis.Y]);
+                context.lineTo(shape.v2[Axis.X] + pos[Axis.X], shape.v2[Axis.Y] + pos[Axis.Y]);
+                context.stroke();
+            },
+
+            /**
+             * Visualize stuff for debugging purposes.
+             */
+            debugDraw: function(ui, context, pos, obj, shape) {
+            }
+
+            // Line
+        }
+        ]
+    };
+
+    Renderers.byName = _.indexBy(Renderers.list, 'shape');
+    Renderers.byType = _.indexBy(Renderers.list, function(renderer) {
+        // lookup shape type id
+        var shapeType = ShapeType[renderer.shape];
+        console.assert(shapeType, 'Invalid renderer type does not exist: ' + renderer.shape);
+        return shapeType;
+    });
+
+
+    // #######################################################################################################################
+    // World creation utilities
+
+    // creates a static box object
+    var AddBox = function (x, y, w, h, name) {
+        var def = {
+            position: vec2.fromValues(x, y),
+            shape: new Shapes.AABB({
+                min: vec2.fromValues(0, 0), 
+                max: vec2.fromValues(w, h)
+            }),
+            name: name
+        };
+
+        var obj = new Objects.RigidBody(def);
+        world.addObject(obj);
+        return obj;
+    };
+
+    var AddDisk = function(x, y, r, name) {
+        var def = {
+            position: vec2.fromValues(x, y),
+            shape: new Shapes.Disk({
+                center: vec2.fromValues(0, 0),
+                radius: r
+            }),
+            name: name
+        };
+
+        var obj = new Objects.RigidBody(def);
+        world.addObject(obj);
+        return obj;
+    };
+
+    var AddLine = function(x1, y1, x2, y2, width, name) {
+        var def = {
+            position: vec2.fromValues(x1, y1),
+            shape: new Shapes.Line({
+                v1: vec2.fromValues(0, 0),
+                v2: vec2.fromValues(x2 - x1, y2 - y1),
+                width: width
+            }),
+            name: name
+        };
+
+        var obj = new Objects.RigidBody(def);
+        world.addObject(obj);
+        return obj;
+    };
+
+
+    // ####################################################################################
     // Pulley:
     // http://jsfiddle.net/06d88cLf/2/
 
-    // setup world configuration
-    var worldSize = 10000;
-    var gameCfg = {
-        
+    var Pulley = {
+        // string
+        freeStringLength: 3,            // does not include the part attached to the disk
+
+        // disk
+        diskRadius: .5,                         // 50 cm
+        diskPosition: vec2.fromValues(0, 3),    // horizontally centered
+
+        // left side has a payload (pump etc.)
+        payloadSize: vec2.fromValues(0.2, 0.1),
+        payloadMass: 0.3, // 300g
+
+        // right side has a counter-weight
+        counterWeightSize: vec2.fromValues(0.3, 0.2),
+        counterWeightMass: 0.5,         // 500g of counter weight mass, or 500l of helium
+
+        // dependent variables
+        payloadPosition: 1.5,           // vertical position (equal to length of right string, centered initially)
+        payloadVelocity: 0,             // vertical velocity of left-hand side (not moving initially)
+
+        // free variables
+        ballonetVolume: 0.01,           // ballonet's air volume let's us control force, and thus velocity and position of payload
     };
-    var worldCfg = {
-        Dt: .03,
-        Gravity: vec2.fromValues(0, -1000),
-        WorldBox: new AABB([0, 0], [worldSize, worldSize]),
-        floor: 0,           
-        ceiling: 3.5        // 3.5m
-    };
 
-    var game = new PulleyWorld(gameCfg, worldCfg);
-    var world = game.world;
+    var pulleyCenter = Pulley.diskPosition;
+    var pulleyLeft = pulleyCenter[0] - Pulley.diskRadius;
+    var pulleyRight = pulleyCenter[0] + Pulley.diskRadius;
+    var pulleyTop = pulleyCenter[1];
+    var pulleyBottomLeft = pulleyCenter[1] - (Pulley.freeStringLength - Pulley.payloadPosition);
+    var pulleyBottomRight = pulleyCenter[1] - Pulley.payloadPosition;
 
-    // creates a static box object
-    var AddBox = function (x, y, w, h) {
-        var def = {
-            position: [x, y],
-            shape: new AABBShape([0, 0], [w, h])
-        };
+    /**
+     * Simulate Pulley physics (single step)
+     * NOTE: this === world
+     */
+    var stepIntegratePulley = function(dt) {
+        // compute and sum up forces:
+        var g = -9.81;          // Earth gravitational acceleration
+        var airDensity = 1.2;   // 1.2 kg/m^3
 
-        var obj = new RigidBody(def);
-        game.world.addObject(obj);
-        return obj;
+        // 1. compute total mass
+        var totalMass = Pulley.payloadMass + (Pulley.ballonetVolume * airDensity) - Pulley.counterWeightMass;
+
+        // 2. compute total force contributions on payload (left-side string bottom position)
+        var W = totalMass * g;      // Weight
+        var D = 0;                  // Draft
+        var epsilon = 0;            // errors + uncertainties
+        var F = W + D + epsilon;
+
+        // 3. compute acceleration
+        var a = F/totalMass;
+
+        // Semi-implicit Euler integration:
+        // a) update velocity
+        Pulley.payloadVelocity += a * dt;
+
+        // b) update position
+        Pulley.payloadPosition += Pulley.payloadVelocity * dt;
     };
     
-    // add some static environment
-    AddBox(-50, worldCfg.floor, 100, 0.1);                  // long ground box
-    AddBox(-50, worldCfg.ceiling - 0.1, 100, 0.1);          // long ceiling box
+    // #######################################################################################################################
+    // Setup a simple world & start UI
 
-    // game controls
-    var commandMap = Command.createCommandMap(game.world, {
+    // setup world configuration
+    var worldCfg = {
+        dt: .03,                // in seconds
+        gravity: vec2.fromValues(0, -9.81),
+        floor: 0,           
+        ceiling: 3.5,        // 3.5m
+        stepIntegrate: stepIntegratePulley
+    };
+
+    var world = new PulleyWorld(worldCfg);
+    
+    // static geometry
+    var floor = AddBox(-50, worldCfg.floor, 100, 0.1, 'floor');                      // long ground box
+    var ceiling = AddBox(-50, worldCfg.ceiling - 0.1, 100, 0.1, 'ceiling');            // long ceiling box
+
+    // Pulley geometry
+    var pulleyComponents = {
+        disk: AddDisk(pulleyCenter[0], pulleyCenter[1], Pulley.diskRadius),
+
+        leftString: AddLine(pulleyLeft, pulleyTop, pulleyLeft, pulleyBottomLeft, .01, 'pulley leftString'),
+        rightString: AddLine(pulleyRight, pulleyTop, pulleyRight, pulleyBottomRight, .01, 'pulley rightString'),
+
+        leftPayload: AddBox(),
+        rightPayload: AddBox(),
+
+        // 
+        ballonet: AddDisk()
+    };
+
+    // ####################################################################################
+    // World controls
+
+    var commandMap = Command.createCommandMap(world, {
         startstop: {
             prettyName: 'Start/Stop',
-            description: 'Starts or stops the game.',
+            description: 'Starts or stops the world.',
             keyboard: 's',
             callback: function() {
                 this.startStopLoop();
@@ -1335,18 +1624,18 @@ require(dependencies, function (jquery, mousetrap, vec2, squishy) {
         }
     });
     
-    
     // bind keys
     Mousetrap.bind('left', function(e) {
         
     }, 'keydown');
     
-    
+    // ####################################################################################
     // start UI
+
     $('body').css('top', '10px');
-    var gameEl = $('#game');
-    var ui = new PulleyWorldUI(gameEl, true, game, commandMap);
+    var worldEl = $('#world');
+    var ui = new PulleyWorldUI(world, worldEl, true, commandMap);
     
-    // start game loop (only sets start time, for now)
-    world.startLoop();
+    // start simulation loop (only sets start time, for now)
+    //world.startLoop();
 });
