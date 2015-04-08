@@ -11,38 +11,10 @@
 'use strict';
 
 
-// configure requirejs
-require.config({
-    baseUrl: '',
-    paths: {
-        Lib: 'lib',
-        //Box2d: 'lib/box2djs',
-
-        Util: 'js/util',
-
-        JS: 'js'
-    }
-});
-
-/**
- * All dependencies of PulleyWorld.
- * @const
- */
-var dependencies = [
-    // Other UI elements
-    'Lib/mousetrap.min',
-
-    // Math utilities
-    'JS/vec2'
-];
-
-
-// load world and initialize UI
-require(dependencies, function (mousetrap, vec2) {
-
+(function() {
     // #######################################################################################################################
     // Shapes & Surfaces
-    
+
     /**
      * Defines all currently implemented shapes.
      * @const
@@ -76,7 +48,7 @@ require(dependencies, function (mousetrap, vec2) {
             return this.dimensions[Axis.X] * this.dimensions[Axis.Y];
         },
     });
-    
+
     /**
      * A simple oriented 2D surface.
      * Implemented by LineSegment (and possibly some simple non-linear surface types, such as parabola).
@@ -133,11 +105,12 @@ require(dependencies, function (mousetrap, vec2) {
             getShapeType: squishy.abstractMethod(),
             getArea: squishy.abstractMethod(),
             containsPoint: squishy.abstractMethod(),
+            getBoundingBox: squishy.abstractMethod(/* box */),
 
             //getSurfaces: squishy.abstractMethod(),
         }
     );
-    
+
     var Shapes = {
         /**
          * @constructor
@@ -210,6 +183,11 @@ require(dependencies, function (mousetrap, vec2) {
             getSide: function(xAxis, minSide) {
                 var index = xAxis + (minSide * 2);
                 return this.surfaces[index];
+            },
+
+            getBoundingBox: function(aabb) {
+                vec2.copy(aabb.min, this.min);
+                vec2.copy(aabb.max, this.max);
             }
         }),
 
@@ -247,6 +225,13 @@ require(dependencies, function (mousetrap, vec2) {
                 // point must be contained by disk, i.e. distance must be <= radius
                 var distSq = vec2.squaredDistance(this.center, point);
                 return distSq <= this.radius * this.radius;
+            },
+
+            getBoundingBox: function(aabb) {
+                aabb.min[0] = this.center[0] - radius;
+                aabb.min[1] = this.center[1] - radius;
+                aabb.max[0] = this.center[0] + radius;
+                aabb.max[1] = this.center[1] + radius;
             }
         }),
 
@@ -309,6 +294,13 @@ require(dependencies, function (mousetrap, vec2) {
 
                 // TODO: Consider adding some epsilon to check to make sure, very thin lines can also be selected
                 return dist <= this.width;      // must be inside width
+            },
+
+            getBoundingBox: function(aabb) {
+                aabb.min[0] = Math.min(this.v1[0], this.v2[0]) - this.width/2;
+                aabb.min[1] = Math.min(this.v1[1], this.v2[1]) - this.width/2;
+                aabb.max[0] = Math.max(this.v1[0], this.v2[0]) + this.width/2;
+                aabb.max[1] = Math.max(this.v1[1], this.v2[1]) + this.width/2;
             }
         })
     };
@@ -326,7 +318,7 @@ require(dependencies, function (mousetrap, vec2) {
         'Movable'
     ]);
 
-    var Object = squishy.createClass(function() {
+    var WorldObject = squishy.createClass(function() {
         // ctor
     }, {
         // methods
@@ -347,7 +339,7 @@ require(dependencies, function (mousetrap, vec2) {
      * Creates a new static RigidBody.
      * @constructor
      */
-    Objects.RigidBody = squishy.extendClass(Object, function (objectDefinition) {
+    Objects.RigidBody = squishy.extendClass(WorldObject, function (objectDefinition) {
         // ctor
         this._super();
 
@@ -448,7 +440,7 @@ require(dependencies, function (mousetrap, vec2) {
 
     // #######################################################################################################################
     // World class & accessories
-    
+
     /**
      * Stores collision pairs and avoids duplicate reporting.
      * Also provides a pool for CollisionPair objects to reduce GC intervention.
@@ -563,14 +555,15 @@ require(dependencies, function (mousetrap, vec2) {
             // check parameter validity
             squishy.assert(config, 'config is undefined');
             squishy.assert(config.dt > 0, 'config.dt is invalid'); // must be positive
-            squishy.assert(vec2.isValid(config.gravity), 'config.gravity is invalid');
+            squishy.assert(config.stepIntegrate instanceof Function, 'config.stepIntegrate is not a function');
 
             this.lastObjectId = 0; // running id for new objects
             this.currentIteration = 1;
-            this.time = 0;
+            this.totalTime = 0;
 
             // assign properties
             this.config = config;
+            this.stepIntegrate = config.stepIntegrate;
 
             // keep track of all objects (including movables), all movables, all current collisions
             this.objects = {};
@@ -684,14 +677,17 @@ require(dependencies, function (mousetrap, vec2) {
             
             startLoop: function() {
                 if (this.running) return;
+                var now = squishy.getCurrentTimeMillisHighRes();  // millis
+                this.lastStepTime = now;
+
                 //this.continueLoop();
                 this.running = true;
                 //this.loopTimer = setInterval(function() { this.advanceTime(); }.bind(this), this.config.dt * 1000);
             },
             
-            continueLoop: function() {
-                // TODO: Compute correct dt
-            },
+            // continueLoop: function() {
+            //     // TODO: Compute correct dt
+            // },
             
             stopLoop: function() {
                 if (!this.running) return;
@@ -701,6 +697,10 @@ require(dependencies, function (mousetrap, vec2) {
             },
             
             isRunning: function() { return this.running; },
+
+            stepOnce: function() {
+                this._step();
+            },
 
             /**
              * Get time since last step, in seconds.
@@ -719,7 +719,7 @@ require(dependencies, function (mousetrap, vec2) {
                 var dt = this.getDtSinceLastStep();
                 while (dt > this.config.dt) {
                     dt -= this.config.dt;
-                    this.step();
+                    this._step();
                 }
                 return dt/this.config.dt;
             },
@@ -727,24 +727,22 @@ require(dependencies, function (mousetrap, vec2) {
             /**
              * Take a simulation step of the given length or pre-configured length.
              */            
-            step: function (dt) {
+            _step: function (dt) {
                 // update iteration count & compute actual time passed
                 ++this.currentIteration;
                 var dt = dt || this.config.dt;
+                this.totalTime += dt;
                 this.lastStepTime += dt * 1000;  // millis
                 
                 // update velocity and position
                 this.stepIntegrate(dt);
-                
-                // run event listeners
-                this.events.step.fire(dt);
             },
         }
     );
 
     // #######################################################################################################################
     // Canvas Utilities
-    
+
 
     /**
      * In theory, SVGMatrix will be used by the Canvas API in the future;
@@ -756,7 +754,7 @@ require(dependencies, function (mousetrap, vec2) {
         var svgNamespace = 'http://www.w3.org/2000/svg';
         return document.createElementNS(svgNamespace, 'svg').getCTM();
     };
-    
+
     /**
      * Multiples the given SVMMatrix with the given 2-component array, representing a vector and stores the result in vec.
      * @see http://stackoverflow.com/questions/7395813/html5-canvas-get-transform-matrix
@@ -765,7 +763,7 @@ require(dependencies, function (mousetrap, vec2) {
         var x = vec[0], y = vec[1];
         vec[0] = x * matrix.a + y * matrix.c + matrix.e;
         vec[1] = x * matrix.b + y * matrix.d + matrix.f;
-   };
+    };
 
     //`enhanceCanvas` takes a 2d canvas and wraps its matrix-changing
     //functions so that `context._matrix` should always correspond to its
@@ -878,126 +876,17 @@ require(dependencies, function (mousetrap, vec2) {
         return context;
     };
 
-
-    // #######################################################################################################################
-    // Commands have a name, description and a callback
-
-    /**
-     * @constructor
-     */
-    var Command = squishy.createClass(
-        function (def) {
-            squishy.assert(def.name);
-            squishy.assert(def.callback);
-            
-            this.name = def.name;
-            this.prettyName = def.prettyName || def.name;
-            this.callback = def.callback;
-            this.description = def.description || '';
-        },{
-            // prototype
-            setOwner: function(owner) { this.owner = owner; },
-            run: function() {
-                squishy.assert(this.owner, 'You forgot to call UICommand.setOwner or Command.createCommandMap.');
-                this.callback.apply(this.owner, arguments);  // call call back on UI object with all arguments passed as-is
-            }
-        }
-    );
-    
-    /**
-     * Takes the owner of all commands, their definitions and 
-     * returns a new map of Command objects.
-     */
-    Command.createCommandMap = function(owner, commandDefinitions) {
-        var map = {};
-        squishy.forEachOwnProp(commandDefinitions, function(name, def) {
-            def.name = name;
-            var cmd = new Command(def);
-            cmd.setOwner(owner);
-            map[name] = cmd;
-        });
-        return map;
-    };
-    
-    if ($) {
-        // if there is a UI (and jQuery support), we also want to append the commands to the toolbar
-        Command.addCommandsToToolbar = function(commandMap, toolbar, buttonCSS) {
-            squishy.forEachOwnProp(commandMap, function(name, cmd) {
-                var button = $('<button>');
-                button.text(cmd.prettyName);
-                button.css(buttonCSS);
-                button.click(function(evt) { cmd.run(); });     // currently, can only run commands without arguments here
-                toolbar.append(button);
-            });
-        };
-    }
-
-
     // #######################################################################################################################
     // UI settings & PulleyWorldUI Class
-
-    /**
-     * @const
-     */
-    var worldContainerCSS = {
-        'position': 'absolute',
-        'left': '0px',
-        'right': '0px',
-        'bottom': '0px',
-        'width': '100%',
-        'height': '100%',
-        'margin': '0px',
-        'padding': '0px',
-
-        'background-color': 'red'
-    };
-    
-    /**
-     * @const
-     */
-    var canvasCSS = {
-        'position': 'relative',  // see: http://stackoverflow.com/a/3274697/2228771
-        'display': 'block', // fixes white overhanging area - see: http://stackoverflow.com/questions/18804858/how-do-i-fix-the-overhanging-blank-area-on-an-image-using-in-html
-        'left': '0px',
-        'right': '0px',
-        'top': '35px',
-        'bottom': '0px',
-        'width': '100%',
-        'height': 'calc(100% - 35px)',
-        'margin': '0px',
-        'padding': '0px',
-
-        'background-color': 'grey'
-    };
-    
-    var toolbarCSS = {
-        'position': 'absolute',
-        'top': '0',
-        'margin': '0px',
-        'padding': '0px',
-        'width': '100%',
-        'height': '35px',
-        'background-color': 'rgba(30,180,30,0.1)',
-        'z-index': 10
-    };
-
-    /**
-     * @const
-     */
-    var toolbarElCSS = {
-        'float': 'left',
-        'margin': '0px',
-        'padding': '6px',
-        'font-size': '1.2em',
-        'z-index': 22
-    };
 
     /**
      * Graphical User Interface for PulleyWorld.
      * @constructor
      */
     var PulleyWorldUI = squishy.createClass(
-        function (world, containerEl, DebugDrawEnabled, commandMap) {
+        function (world, config, containerEl, DebugDrawEnabled) {
+            console.assert(containerEl[0], 'Missing containerEl');
+
             // set object properties
             this.containerEl = containerEl;
             this.DebugDrawEnabled = DebugDrawEnabled;
@@ -1008,9 +897,13 @@ require(dependencies, function (mousetrap, vec2) {
             this._tmp = vec2.create();
 
             // setup everything
-            this.commands = commandMap || {};
             this.registerEventListeners();
             this.setupUI();
+
+            // add render hooks
+            this.onRender = config.onRender || {};
+            this.onRender.pre = this.onRender.pre || function() {};
+            this.onRender.post = this.onRender.post || function() {};
 
             // start render loop
             this.requestRendering(true);
@@ -1022,30 +915,12 @@ require(dependencies, function (mousetrap, vec2) {
              * @sealed
              */
             setupUI: function () {
-                // style world container
-                this.containerEl.css(worldContainerCSS);
-
-                // create toolbar
-                // TODO: Proper toolbar
-                var toolbar = this.toolbar = $('<div>');
-                toolbar.css(toolbarCSS);
-                this.containerEl.append(toolbar);
-
-                // create, style and append canvas
+                // create and append canvas
                 var $canvas = this.$canvas = $('<canvas></canvas>');
-                $canvas.css(canvasCSS);
                 this.containerEl.append($canvas);
 
                 // HTML elements need tabindex to be focusable (see: http://stackoverflow.com/questions/5965924/jquery-focus-to-div-is-not-working)
                 $canvas.attr('tabindex', 0);
-                
-                // add buttons
-                Command.addCommandsToToolbar(this.commands, toolbar, toolbarElCSS);
-                
-                // create, style and append text box
-                var text = this.text = $('<pre>hi</pre>');
-                text.css(toolbarElCSS);
-                toolbar.append(text);
 
                 var canvasDOM = $canvas[0];
 
@@ -1080,7 +955,50 @@ require(dependencies, function (mousetrap, vec2) {
                 
                 this.fixAspectRatio();
             },
+
+
+            // ###################################################################################################
+            // Render loop control
+
+            /**
+             * Start or stop running.
+             */
+            startStopLoop: function() {
+                if (this.running) this.stopLoop();
+                else this.startLoop();
+            },
             
+            startLoop: function() {
+                if (this.running) return;
+                this.running = true;
+                this.world.startLoop();
+
+                this.requestRendering(false);
+            },
+            
+            // continueLoop: function() {
+            //     // TODO: Compute correct dt
+            // },
+            
+            stopLoop: function() {
+                if (!this.running) return;
+                this.running = false;
+                this.world.stopLoop();
+            },
+
+            stepOnce: function() {
+                this.world.stepOnce();
+                this.requestRendering(true);
+            },
+            
+            /**
+             * Request _render to be called again soon.
+             */
+            requestRendering: function(force) {
+                if (!force && !this.running) return;
+
+                if (!this.renderTimer) this.renderTimer = requestAnimationFrame(this._render.bind(this));
+            },
             
             // ###################################################################################################
             // Rendering
@@ -1120,19 +1038,10 @@ require(dependencies, function (mousetrap, vec2) {
                 // Restore the transform
                 ctx.restore();
             },
-            
-            /**
-             * Request _render to be called again soon.
-             */
-            requestRendering: function(force) {
-                if (!force && !this.world.isRunning()) return;
-
-                if (!this.renderTimer) this.renderTimer = requestAnimationFrame(this._render.bind(this));
-            },
 
             _render: function (timestamp) {
                 // advance physics simulation
-                var timeRatio = this.world.advanceTime(timeRatio);
+                var timeRatio = this.world.advanceTime();
                 
                 // re-draw all objects
                 var canvasDOM = this.$canvas[0];
@@ -1142,12 +1051,14 @@ require(dependencies, function (mousetrap, vec2) {
                 // clear canvas
                 this.clear();
 
+                this.onRender.pre.call(this);
+
                 var renderPos = vec2.create();
                 
-                // TODO: Kd-tree, BVI etc for faster finding of rendered objects
                 for (var objId in this.world.objects) {
                     if (!this.world.objects.hasOwnProperty(objId)) continue;
                     var obj = this.world.objects[objId];
+
                     // TODO: Check if object intersects with viewport
                     var shape = obj.getShape();
                     var shapeType = shape.getShapeType();
@@ -1163,6 +1074,8 @@ require(dependencies, function (mousetrap, vec2) {
                         objectRenderer.debugDraw(this, context, renderPos, obj, shape);
                     }
                 }
+
+                this.onRender.post.call(this);
 
                 this.renderTimer = null;
                 this.requestRendering(false);
@@ -1236,9 +1149,6 @@ require(dependencies, function (mousetrap, vec2) {
             onCursorMove: function() {
                 vec2.copy(this.cursorWorld, this.cursorClient);
                 this.transformClientToWorld(this.cursorWorld);
-                
-                // display mouse world coordinates
-                this.text.text('Mouse: ' + this.cursorWorld);
             },
             
             /**
@@ -1474,14 +1384,15 @@ require(dependencies, function (mousetrap, vec2) {
         return obj;
     };
 
-    var AddDisk = function(x, y, r, name) {
+    var AddDisk = function(x, y, r, name, renderConfig) {
         var def = {
             position: vec2.fromValues(x, y),
             shape: new Shapes.Disk({
                 center: vec2.fromValues(0, 0),
                 radius: r
             }),
-            name: name
+            name: name,
+            renderConfig: renderConfig
         };
 
         var obj = new Objects.RigidBody(def);
@@ -1489,15 +1400,16 @@ require(dependencies, function (mousetrap, vec2) {
         return obj;
     };
 
-    var AddLine = function(x1, y1, x2, y2, width, name) {
+    var AddLine = function(x1, y1, x2, y2, width, name, renderConfig) {
         var def = {
             position: vec2.fromValues(x1, y1),
             shape: new Shapes.Line({
                 v1: vec2.fromValues(0, 0),
-                v2: vec2.fromValues(x2 - x1, y2 - y1),
+                v2: vec2.fromValues(x2, y2),
                 width: width
             }),
-            name: name
+            name: name,
+            renderConfig: renderConfig
         };
 
         var obj = new Objects.RigidBody(def);
@@ -1506,136 +1418,465 @@ require(dependencies, function (mousetrap, vec2) {
     };
 
 
-    // ####################################################################################
-    // Pulley:
-    // http://jsfiddle.net/06d88cLf/2/
+    // #########################################################################################################################################
+    // Pulley physics
 
-    var Pulley = {
-        // string
-        freeStringLength: 3,            // does not include the part attached to the disk
+    var CreatePulley = function(top) {
+        // initialize pulley
+        var diskRadius = .5;                        // 50 cm
+        var pulley = {
+            // ############################################################        
+            // geometry and invariable physics
 
-        // disk
-        diskRadius: .5,                         // 50 cm
-        diskPosition: vec2.fromValues(0, 3),    // horizontally centered
+            // string
+            freeStringLength: 3,            // does not include the part attached to the disk
 
-        // left side has a payload (pump etc.)
-        payloadSize: vec2.fromValues(0.2, 0.1),
-        payloadMass: 0.3, // 300g
+            // disk
+            diskRadius: diskRadius, 
+            diskPosition: vec2.fromValues(0, top - .1 - diskRadius),    // horizontally centered
 
-        // right side has a counter-weight
-        counterWeightSize: vec2.fromValues(0.3, 0.2),
-        counterWeightMass: 0.5,         // 500g of counter weight mass, or 500l of helium
+            // left side has a payload (pump etc.)
+            payloadSize: vec2.fromValues(0.2, 0.1),
+            payloadMass: 0.49, // [kg]
 
-        // dependent variables
-        payloadPosition: 1.5,           // vertical position (equal to length of right string, centered initially)
-        payloadVelocity: 0,             // vertical velocity of left-hand side (not moving initially)
+            // right side has a counter-weight
+            counterWeightSize: vec2.fromValues(0.3, 0.2),
+            counterWeightMass: 0.5,             // 500g of counter weight mass, or 500l of helium
 
-        // free variables
-        ballonetVolume: 0.01,           // ballonet's air volume let's us control force, and thus velocity and position of payload
+            ballonetPumpInFlow: 0.006,          // When pump is on, air is pumped into ballonet [m^3/s] (0.006 m^3/s = 6 L/s)
+            ballonetOutFlow: 0.01,              // When valve is open, ballonet loses air [m^3/s]
+
+
+            // ############################################################
+            // physics computation
+
+            physics: {
+                // free variables
+                isValveOpen: false,
+                isPumpOn: true,
+
+                // dependent variables
+                ballonetVolume: 0.01,           // ballonet's air volume has a direct impact on force
+                payloadPosition: 1.5,           // vertical position (equal to length of right string; centered initially)
+                payloadVelocity: 0,             // vertical velocity of left-hand side (not moving initially)
+            }
+        };
+
+
+        // ############################################################
+        // public methods
+
+        pulley.getHeightForPayloadPosition = function(pos) {
+            return pulleyTop - pulley.freeStringLength + pos;
+        };
+
+        pulley.initializePulley = function(world) {
+            this.world = world;
+
+            // create Pulley components
+            this.components = {
+                disk: AddDisk(pulleyCenter[0], pulleyCenter[1], this.diskRadius, 'disk'),
+
+                leftString: AddLine(pulleyLeft, pulleyTop, 0, dependentGeometry.leftStringBottomY, .01, 'pulley leftString'),
+                rightString: AddLine(pulleyRight, pulleyTop, 0, dependentGeometry.rightStringBottomY, .01, 'pulley rightString'),
+
+                // right
+                counterWeight: AddBox(pulleyRight - this.counterWeightSize[0]/2, dependentGeometry.counterWeightY, this.counterWeightSize[0], this.counterWeightSize[1], 'counter weight'),
+
+                // left: Payload + ballonet
+                leftPayload: AddBox(pulleyLeft - this.payloadSize[0]/2, dependentGeometry.leftPayloadY, this.payloadSize[0], this.payloadSize[1], 'payload'),
+                // 
+                ballonet: AddDisk(pulleyLeft, dependentGeometry.ballonetY, dependentGeometry.ballonetRadius, 'ballonet')
+            };
+        };
+
+        /**
+         * Called every step
+         */
+        var updatePulleyComponents = function() {
+            this.components.leftString.shape.v2[1] = dependentGeometry.leftStringBottomY;
+            this.components.rightString.shape.v2[1] = dependentGeometry.rightStringBottomY;
+            this.components.counterWeight.position[1] = dependentGeometry.counterWeightY;
+            this.components.leftPayload.position[1] = dependentGeometry.leftPayloadY;
+            this.components.ballonet.position[1] = dependentGeometry.ballonetY;
+            this.components.ballonet.shape.radius = dependentGeometry.ballonetRadius;
+        }.bind(pulley);
+
+        /**
+         * Simulate Pulley physics (single step)
+         * NOTE: this === world
+         */
+        pulley.stepIntegrate = function(dt) {
+            if (this.physics.isPumpOn) {
+                // pump action
+                this.physics.ballonetVolume += this.ballonetPumpInFlow * dt;
+            }
+            if (this.physics.isValveOpen) {
+                // TODO: Rapidly losing air is going to increase velocity due to rocket equation
+                //      see: http://en.wikipedia.org/wiki/Tsiolkovsky_rocket_equation
+                this.physics.ballonetVolume -= this.ballonetOutFlow * dt;
+                this.physics.ballonetVolume = Math.max(0, this.physics.ballonetVolume);
+            }
+
+            // compute and sum up forces:
+            var g = -9.81;                      // Earth gravitational acceleration
+            var airDensity = 1.2;               // 1.2 kg/m^3
+            var frictionConstant = 10;         // we have at least some minimal friction (if too big, integration grows unstable!!)
+
+            // 1. compute total mass
+            this.physics.totalPayloadMass = this.payloadMass + (this.physics.ballonetVolume * airDensity);
+
+            // 2. compute total force contributions on payload (left-side string bottom position)
+            // TODO: Drag is a function of balloon size + uncertainty
+            var v = this.physics.payloadVelocity;
+            var epsilon = 0;                        // errors + uncertainties
+            this.physics.B = this.physics.totalPayloadMass * g;             // Buyoancy
+            this.physics.W = this.counterWeightMass * g;                    // Weight
+            //this.physics.D = -frictionConstant * v;                       // simplified Drag + friction
+            this.physics.F = this.physics.B - this.physics.W + epsilon;     // weight pulls down
+
+            // 3. compute acceleration
+            this.physics.a = this.physics.F / Math.abs(this.physics.totalPayloadMass - this.counterWeightMass);
+
+            // Semi-implicit Euler integration:
+            // a) update velocity
+            // v = v_old + (a - mu_friction * v) * dt <=> (1) v / dt = (v_old/dt + a) / (1 + mu_friction)
+            this.physics.D = -frictionConstant * v;                         // simplified Drag + friction
+            this.physics.payloadVelocity += (this.physics.a + this.physics.D) * dt;
+
+            // b) update position
+            this.physics.payloadPosition += this.physics.payloadVelocity * dt;
+
+
+            // ########################################################
+            // update geometry
+
+            updateDependentGeometry();
+
+            var rightStringLength = pulley.physics.payloadPosition;
+            var leftStringLength = pulley.freeStringLength - pulley.physics.payloadPosition;
+            var floorHeight = pulleyTop - world.config.floor;
+
+            // resolve collisions (non-elastic; kinetic energy dissipates)
+            if (rightStringLength > floorHeight) {
+                // right side bumps against floor
+                this.physics.payloadPosition = pulleyTop;
+                this.physics.payloadVelocity = 0;
+            }
+            else if (leftStringLength > floorHeight) {
+                // left side bumps against floor
+                pulley.physics.payloadPosition = pulley.freeStringLength - floorHeight;
+                this.physics.payloadVelocity = 0;
+            }
+            else if (rightStringLength < 0) {
+                // right side bumps against pulley wheel
+                this.physics.payloadPosition = 0;
+                this.physics.payloadVelocity = 0;
+            }
+            else if (leftStringLength < 0) {
+                // left side bumps against pulley wheel
+                this.physics.payloadPosition = pulley.freeStringLength;
+                this.physics.payloadVelocity = 0;
+            }
+
+            updatePulleyComponents();
+
+            if (this.onStep) {
+                this.onStep();
+            }
+        };
+
+        // ###################################
+        // controller interface
+
+        /**
+         *
+         */
+        pulley.getControllerValue = function() {
+            return this.physics.payloadPosition;
+        };
+
+        /**
+         * Called by controller to update it's "recommended value"
+         */
+        pulley.setControllerValue = function(u) {
+            var epsilon = .0000001;
+            if (u > epsilon) {
+                // need to move up
+                this.physics.isPumpOn = false;
+                this.physics.isValveOpen = true;
+            }
+            else if (u < -epsilon) {
+                // need to move down
+                this.physics.isPumpOn = true;
+                this.physics.isValveOpen = false;
+            }
+            else {
+                // do nothing
+                this.physics.isPumpOn = false;
+                this.physics.isValveOpen = false;
+            }
+        };
+
+        // ############################################################
+        // create and maintain pulley and its components
+
+        // static geometry
+        var pulleyCenter = pulley.diskPosition;
+        var pulleyLeft = pulleyCenter[0] - pulley.diskRadius;
+        var pulleyRight = pulleyCenter[0] + pulley.diskRadius;
+        var pulleyTop = pulleyCenter[1];
+
+        // dependent geometry
+        var dependentGeometry = {};
+
+        var updateDependentGeometry = function() {
+            dependentGeometry.pulleyBottomLeft = pulley.getHeightForPayloadPosition(pulley.physics.payloadPosition);
+            dependentGeometry.pulleyBottomRight = pulleyTop - pulley.physics.payloadPosition;
+            dependentGeometry.ballonetRadius = Math.pow(3/4 * pulley.physics.ballonetVolume / Math.PI, 1/3);
+
+            dependentGeometry.leftStringBottomY = dependentGeometry.pulleyBottomLeft - pulleyTop;
+            dependentGeometry.rightStringBottomY = dependentGeometry.pulleyBottomRight - pulleyTop;
+            dependentGeometry.counterWeightY = dependentGeometry.pulleyBottomRight - pulley.counterWeightSize[1];
+            dependentGeometry.leftPayloadY = dependentGeometry.pulleyBottomLeft - pulley.payloadSize[1];
+            dependentGeometry.ballonetY = dependentGeometry.pulleyBottomLeft - dependentGeometry.ballonetRadius - pulley.payloadSize[1];
+        };
+
+        updateDependentGeometry();
+
+
+        // return result
+        return pulley;
     };
 
-    var pulleyCenter = Pulley.diskPosition;
-    var pulleyLeft = pulleyCenter[0] - Pulley.diskRadius;
-    var pulleyRight = pulleyCenter[0] + Pulley.diskRadius;
-    var pulleyTop = pulleyCenter[1];
-    var pulleyBottomLeft = pulleyCenter[1] - (Pulley.freeStringLength - Pulley.payloadPosition);
-    var pulleyBottomRight = pulleyCenter[1] - Pulley.payloadPosition;
+    var PIDControllerClass = squishy.createClass(function(cfg) {
+        // ctor
+        squishy.clone(cfg, false, this);                 // copy values to controller instance
 
-    /**
-     * Simulate Pulley physics (single step)
-     * NOTE: this === world
-     */
-    var stepIntegratePulley = function(dt) {
-        // compute and sum up forces:
-        var g = -9.81;          // Earth gravitational acceleration
-        var airDensity = 1.2;   // 1.2 kg/m^3
+        this.physics = {
+            // last error value (distance to setPoint)
+            errorValue: 0,
 
-        // 1. compute total mass
-        var totalMass = Pulley.payloadMass + (Pulley.ballonetVolume * airDensity) - Pulley.counterWeightMass;
+            // proportional output
+            Pout: 0,
 
-        // 2. compute total force contributions on payload (left-side string bottom position)
-        var W = totalMass * g;      // Weight
-        var D = 0;                  // Draft
-        var epsilon = 0;            // errors + uncertainties
-        var F = W + D + epsilon;
+            // integral output
+            Iout: 0,
 
-        // 3. compute acceleration
-        var a = F/totalMass;
+            // derivative output
+            Dout: 0,
 
-        // Semi-implicit Euler integration:
-        // a) update velocity
-        Pulley.payloadVelocity += a * dt;
+            // total controller output
+            u: 0
+        };
+    },{
+        // methods
 
-        // b) update position
-        Pulley.payloadPosition += Pulley.payloadVelocity * dt;
+        update: function() {
+            if (!this.isOn) return;
+
+            var plant = this.plant;
+            var val = plant.getControllerValue();
+            
+            var lastErrorValue = this.physics.errorValue;
+            this.physics.errorValue = this.setPoint - val;
+
+            // proportional
+            this.physics.Pout = this.kP * this.physics.errorValue;
+
+            // integration
+            this.physics.Iout += this.kI * this.physics.errorValue;
+
+            // derivative
+            this.physics.Dout = this.kD * (this.physics.errorValue - lastErrorValue);
+
+            // compute total
+            var u = this.physics.u = this.physics.Pout + this.physics.Iout + this.physics.Dout;
+            plant.setControllerValue(u);
+            return u;
+        }
+    });
+
+    var stepIntegrate = function(dt) {
+        PIDController.update();
+
+        pulley.stepIntegrate(dt);
     };
-    
+
+
+    // #######################################################################################################################
+    // Create Pulley and controller
+
+    var ceiling = 5;          // 5m
+
+    var pulley = CreatePulley(ceiling);
+
+    var PIDController = new PIDControllerClass({
+        plant: pulley,
+        setPoint: 2,                  // [m] (right-hand string length)
+        isOn: true,
+
+        // gains
+        kP: .05,
+        kI: .00000,
+        kD: .5
+    });
+
+
     // #######################################################################################################################
     // Setup a simple world & start UI
 
     // setup world configuration
     var worldCfg = {
-        dt: .03,                // in seconds
-        gravity: vec2.fromValues(0, -9.81),
+        dt: .015,                // in seconds
         floor: 0,           
-        ceiling: 3.5,        // 3.5m
-        stepIntegrate: stepIntegratePulley
+        ceiling: ceiling, 
+        stepIntegrate: stepIntegrate
     };
 
     var world = new PulleyWorld(worldCfg);
-    
-    // static geometry
+
+    // add static geometry
     var floor = AddBox(-50, worldCfg.floor, 100, 0.1, 'floor');                      // long ground box
     var ceiling = AddBox(-50, worldCfg.ceiling - 0.1, 100, 0.1, 'ceiling');            // long ceiling box
 
-    // Pulley geometry
-    var pulleyComponents = {
-        disk: AddDisk(pulleyCenter[0], pulleyCenter[1], Pulley.diskRadius),
-
-        leftString: AddLine(pulleyLeft, pulleyTop, pulleyLeft, pulleyBottomLeft, .01, 'pulley leftString'),
-        rightString: AddLine(pulleyRight, pulleyTop, pulleyRight, pulleyBottomRight, .01, 'pulley rightString'),
-
-        leftPayload: AddBox(),
-        rightPayload: AddBox(),
-
-        // 
-        ballonet: AddDisk()
-    };
+    // add pulley
+    pulley.initializePulley(world);
 
     // ####################################################################################
-    // World controls
+    // Angular controller
 
-    var commandMap = Command.createCommandMap(world, {
-        startstop: {
-            prettyName: 'Start/Stop',
-            description: 'Starts or stops the world.',
-            keyboard: 's',
-            callback: function() {
-                this.startStopLoop();
+    var includeModules = [];
+    var app = angular.module('app', includeModules);
+
+    app.controller('worldCtrl', ['$scope', function($scope) {
+        $scope.squishy = squishy;
+        $scope._ = _;
+
+        $scope.world = world;
+        $scope.pulley = pulley;
+        $scope.rendering = Rendering;
+        $scope.PIDController = PIDController;
+
+        $scope.startStopLoop = function() {
+            Rendering.world.startStopLoop();
+        };
+
+        $scope.stepOnce = function() {
+            Rendering.world.stepOnce();
+        };
+
+        $scope.togglePump = function() {
+            pulley.physics.isPumpOn = !pulley.physics.isPumpOn;
+        };
+
+        $scope.toggleValve = function() {
+            pulley.physics.isValveOpen = !pulley.physics.isValveOpen;
+        };
+
+        $scope.resetBallonet = function() {
+            pulley.physics.ballonetVolume = 0.01;
+        };
+
+        $scope.toggleController = function() {
+            PIDController.isOn = !PIDController.isOn;
+        };
+
+
+        // ################################################################################
+        // Angular utilities
+
+        /**
+         * Call $scope.$digest(fn), if it is safe to do so
+         *  (i.e. digest or apply cycle is currently not executing).
+         */
+        $scope.safeDigest = function(fn) {
+            if (!this.$root) return;        // scope has been destroyed
+
+            var phase = this.$root.$$phase;
+            if(phase == '$apply' || phase == '$digest') {
+                if(fn && (fn instanceof Function)) {
+                    fn();
+                }
+            } else {
+                this.$digest(fn);
+                //this.digestAndMeasure(fn);
             }
         },
-        steponce: {
-            prettyName: 'Step Once',
-            description: 'Takes a single simulation step.',
-            keyboard: 'o',
-            callback: function() {
-                this.step();
-            }
-        }
-    });
-    
-    // bind keys
-    Mousetrap.bind('left', function(e) {
-        
-    }, 'keydown');
-    
-    // ####################################################################################
-    // start UI
 
-    $('body').css('top', '10px');
-    var worldEl = $('#world');
-    var ui = new PulleyWorldUI(world, worldEl, true, commandMap);
-    
-    // start simulation loop (only sets start time, for now)
-    //world.startLoop();
-});
+        $scope.applyLater = function(fn) {
+            if (!this.$root) return;        // scope has been destroyed
+
+            // if already running timer, don't do it again
+            if (!this.$root._applyLater) {
+                this.$root._applyLater = 1;
+                setTimeout(function() {
+                    if (!this.$root) return;        // scope has been destroyed
+
+                    // done -> Apply!
+                    this.$root._applyLater = 0;
+                    this.$apply(fn);
+                }.bind(this));
+            }
+        };
+
+        pulley.onStep = function() {
+            $scope.applyLater();
+        };
+
+        $(document).mousemove(function($evt) {
+            $scope.safeDigest();
+        });
+    }]);
+
+
+    // #######################################################################################################################
+    // Extra rendering
+
+    var onPostRender = function() {
+        var context = this.context;
+
+        // draw force
+
+        //context.drawArrow(from, normal, 5);
+    };
+
+    // add special render options
+    var renderConfig = {
+        onRender: {
+            post: onPostRender
+        }
+    };
+
+    var Rendering = {};
+    var pulleyCenter = pulley.diskPosition;
+    var pulleyLeft = pulleyCenter[0] - pulley.diskRadius;
+
+    var setPointMarkerW = 1;
+    Rendering.setPointMarker = AddLine(pulleyLeft - setPointMarkerW/2, pulley.getHeightForPayloadPosition(PIDController.setPoint), setPointMarkerW, 0, 
+            .01, 'set point', {
+        borderColor: '#FF0000'
+    });
+
+    setTimeout(function() {
+        // ####################################################################################
+        // World controls
+
+        // bind keys
+        Mousetrap.bind('left', function(e) {
+            
+        }, 'keydown');
+
+
+        // ####################################################################################
+        // setup and start Renderer
+
+        //$('body').css('top', '10px');
+        var worldEl = $('#world');
+        Rendering.world = new PulleyWorldUI(world, renderConfig, worldEl, true);
+        Rendering.world.stepOnce();
+
+        // start render + simulation loop
+        Rendering.world.startLoop();
+    });
+})();

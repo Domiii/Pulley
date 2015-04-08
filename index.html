@@ -5,28 +5,103 @@
 	<meta http-equiv="content-type" content="text/html; charset=utf-8">
 	<title>Pulley.js</title>
 
-    <!-- lo-dash -->
-    <script src="lib/lodash.min.js"></script>
+    <!-- ########################################################### -->
+    <!-- CSS -->
+
+    <!-- bootstrap & font-awesome make things look pretty -->
+    <link rel="stylesheet" href="lib/bootstrap/bootstrap.min.css">
+    <link rel="stylesheet" href="lib/font-awesome/css/font-awesome.min.css">
+
+    <!-- our own CSS styles -->
+    <link rel="stylesheet" href="styles.css">
+
+    <!-- ########################################################### -->
+    <!-- JS -->
 
     <!-- jquery -->
     <script src="lib/jquery/jquery-2.1.0.min.js"></script>
+
+    <!-- Angular JS -->
+    <script src="lib/angular/angular.js"></script>
+    <script src="lib/angular/angular-sanitize.js"></script>
+
+    <!-- bootstrap's logic (requires jquery) -->
+    <script src="lib/bootstrap/bootstrap.3.1.1.min.js"></script>
+
+    <!-- some fancy UI elements for Angular + Bootstrap. -->
+    <script src="lib/angular/ui-bootstrap-tpls-0.11.2.js"></script>
+
+    <!-- lo-dash -->
+    <script src="lib/lodash.min.js"></script>
 
     <!-- squishy -->
     <script src="lib/squishy/squishy.js"></script>
     <script src="lib/squishy/squishy.util.js"></script>
     <script src="lib/squishy/squishy.domUtil.js"></script>
+
+    <!-- mousetrap -->
+    <script src="lib/mousetrap.min.js"></script>
+
+    <!-- vec2 -->
+    <script src="js/vec2.js"></script>
+
+    <!-- Load world! -->
+    <script src="js/AppStarter.js"></script>
 </head>
 
 
-
 <body>
-    <!-- The game container -->
-	<div id="world">
-        
-	</div>
-    
-    <!-- Start loading world -->
-    <script data-main="js/AppStarter.js" src="lib/require.js"></script>
+    <div id="all" ng-app="app" ng-controller="worldCtrl">
+        <!-- The world div will contain the canvas -->
+        <div class="world-container">
+        	<div id="world">
+                <div id="toolbar">
+                    <a class="btn btn-default"
+                        ng-click="startStopLoop();">
+                        Start/Stop
+                    </a>
+                    <a class="btn btn-default"
+                        ng-click="stepOnce();">
+                        Step Once
+                    </a>
+                    <a class="btn btn-default"
+                        ng-click="toggleController();">
+                        Controller: {{ PIDController.isOn && 'ON' || 'OFF' }}
+                    </a>
+                    <a class="btn btn-default"
+                        ng-click="resetBallonet();">
+                        Reset Ballast
+                    </a>
+                    <a class="btn btn-default" style="width: 140px"
+                        ng-click="togglePump();">
+                        Pump: {{ pulley.physics.isPumpOn && 'ON' || 'OFF' }}
+                    </a>
+                    <a class="btn btn-default" style="width: 140px"
+                        ng-click="toggleValve();">
+                        Valve: {{ pulley.physics.isValveOpen && 'OPEN' || 'CLOSED' }}
+                    </a>
+                </div>
+        	</div>
+        </div>
+
+        <div class="info-panel some-padding">
+            <pre>Time: {{(world.totalTime.toFixed(2))}} s
+Mouse: [{{rendering.world.cursorWorld[0].toFixed(2) + ', ' + rendering.world.cursorWorld[1].toFixed(2)}}]
+
+Air: {{ (pulley.physics.ballonetVolume * 1000).toFixed(2)}} L
+
+M (left): {{pulley.physics.totalPayloadMass.toFixed(2)}}, M (right): {{pulley.counterWeightMass.toFixed(2)}}
+v: {{pulley.physics.payloadVelocity.toFixed(2)}}
+a: {{pulley.physics.a.toFixed(2)}}
+B: {{pulley.physics.B.toFixed(2)}}
+W: {{pulley.physics.W.toFixed(2)}}
+D: {{pulley.physics.D.toFixed(2)}}
+F: {{pulley.physics.F.toFixed(2)}}</pre>
+
+            <pre>PID:
+{{squishy.objToString(PIDController.physics)}}</pre>
+        </div>
+    </div>
 </body>
 
 </html>
