@@ -1717,9 +1717,9 @@
         isOn: true,
 
         // gains
-        kP: .05,
+        kP: .1,
         kI: .00000,
-        kD: .5
+        kD: 3
     });
 
 
