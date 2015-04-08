@@ -1511,6 +1511,9 @@ require(dependencies, function (mousetrap, vec2) {
     // http://jsfiddle.net/06d88cLf/2/
 
     var Pulley = {
+        // #########################
+        // geometry
+
         // string
         freeStringLength: 3,            // does not include the part attached to the disk
 
@@ -1526,12 +1529,22 @@ require(dependencies, function (mousetrap, vec2) {
         counterWeightSize: vec2.fromValues(0.3, 0.2),
         counterWeightMass: 0.5,         // 500g of counter weight mass, or 500l of helium
 
+        // when pump is on, we get this flow rate
+        ballonetPumpInFlowRate: 0.006,    // m^3/s (about 6 l/s)
+
+        // when pump is off and valve is open, we get this flow rate
+        // TODO: This is most likely not a constant (gotta test things)
+        ballonetOpenValveFlowRate: -0.006,
+
+
+        // #########################
         // dependent variables
         payloadPosition: 1.5,           // vertical position (equal to length of right string, centered initially)
         payloadVelocity: 0,             // vertical velocity of left-hand side (not moving initially)
+        ballonetVolume: 0.01,           // ballonet's air volume let's us control vertical force, and thus velocity and position
 
         // free variables
-        ballonetVolume: 0.01,           // ballonet's air volume let's us control force, and thus velocity and position of payload
+        ballonetPumpFlowRate: 0.006,    // m^3/s (about 6 l/s)
     };
 
     var pulleyCenter = Pulley.diskPosition;
