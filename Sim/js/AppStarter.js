@@ -1257,7 +1257,7 @@
                 // see http://www.html5canvastutorials.com/tutorials/html5-canvas-rectangles/
 
                 context.beginPath();
-                context.fillStyle = obj.renderConfig.shapeColor || RendererConfig.shapeColor,
+                context.fillStyle = obj.renderConfig.shapeColor || RendererConfig.shapeColor;
                 context.strokeStyle = obj.renderConfig.borderColor || RendererConfig.borderColor;
                 context.lineWidth = obj.renderConfig.borderWidth || RendererConfig.borderWidth;
                 context.strokeRect(pos[Axis.X], pos[Axis.Y], shape.dimensions[Axis.X], shape.dimensions[Axis.Y]);
@@ -1369,14 +1369,15 @@
     // World creation utilities
 
     // creates a static box object
-    var AddBox = function (x, y, w, h, name) {
+    var AddBox = function (x, y, w, h, name, renderConfig) {
         var def = {
             position: vec2.fromValues(x, y),
             shape: new Shapes.AABB({
                 min: vec2.fromValues(0, 0), 
                 max: vec2.fromValues(w, h)
             }),
-            name: name
+            name: name,
+            renderConfig: renderConfig
         };
 
         var obj = new Objects.RigidBody(def);
@@ -1521,7 +1522,7 @@
             // compute and sum up forces:
             var g = -9.81;                      // Earth gravitational acceleration
             var airDensity = 1.2;               // 1.2 kg/m^3
-            var frictionConstant = 10;         // we have at least some minimal friction (if too big, integration grows unstable!!)
+            var frictionConstant = 100;         // we have at least some minimal friction (if too big, integration grows unstable!!)
 
             // 1. compute total mass
             this.physics.totalPayloadMass = this.payloadMass + (this.physics.ballonetVolume * airDensity);
@@ -1592,21 +1593,21 @@
         /**
          *
          */
-        pulley.getControllerValue = function() {
+        pulley.getPayloadPosition = function() {
             return this.physics.payloadPosition;
         };
 
         /**
-         * Called by controller to update it's "recommended value"
+         * Called by controller with a u value trying to correct things
          */
-        pulley.setControllerValue = function(u) {
-            var epsilon = .01;
-            if (u > epsilon) {
+        pulley.correctForControllerInput = function(u) {
+            var positionEpsilon = .001;
+            if (u > positionEpsilon) {
                 // need to move up
                 this.physics.isPumpOn = false;
                 this.physics.isValveOpen = true;
             }
-            else if (u < -epsilon) {
+            else if (u < -positionEpsilon) {
                 // need to move down
                 this.physics.isPumpOn = true;
                 this.physics.isValveOpen = false;
@@ -1616,6 +1617,14 @@
                 this.physics.isPumpOn = false;
                 this.physics.isValveOpen = false;
             }
+        };
+
+        pulley.getPositionStabilizerInput = function() {
+            if (positionController.physics.u != 0) {
+                // don't do anything while position controller is active
+                return 0;
+            }
+            return this.physics.F;
         };
 
         // ############################################################
@@ -1649,7 +1658,7 @@
         return pulley;
     };
 
-    var PIDControllerClass = squishy.createClass(function(cfg) {
+    var PIDController = squishy.createClass(function(cfg) {
         // ctor
         squishy.clone(cfg, false, this);                 // copy values to controller instance
 
@@ -1675,11 +1684,21 @@
         update: function() {
             if (!this.isOn) return;
 
-            var plant = this.plant;
-            var val = plant.getControllerValue();
+            // get controller input from plant
+            var val = this.getControllerInput();
             
             var lastErrorValue = this.physics.errorValue;
-            this.physics.errorValue = this.setPoint - val;
+            var setPointCenter = (this.setPointMax + this.setPointMin)/2;
+            if (val < this.setPointMin) {
+                this.physics.errorValue = setPointCenter - val;
+            }
+            else if (val > this.setPointMax) {
+                this.physics.errorValue = setPointCenter - val;
+            }
+            else {
+                this.physics.errorValue = 0;
+                lastErrorValue = 0;                 // let derivative also be 0
+            }
 
             // proportional
             this.physics.Pout = this.kP * this.physics.errorValue;
@@ -1692,34 +1711,56 @@
 
             // compute total
             var u = this.physics.u = this.physics.Pout + this.physics.Iout + this.physics.Dout;
-            plant.setControllerValue(u);
+            
+            // write controller value back to plant
+            this.setControllerOutput(u);
             return u;
         }
     });
 
     var stepIntegrate = function(dt) {
-        PIDController.update();
+        positionController.update();
+        positionStabilizer.update();
 
         pulley.stepIntegrate(dt);
     };
 
 
     // #######################################################################################################################
-    // Create Pulley and controller
+    // Create Pulley and controllers
 
     var ceiling = 5;          // 5m
 
     var pulley = CreatePulley(ceiling);
 
-    var PIDController = new PIDControllerClass({
-        plant: pulley,
-        setPoint: 2,                  // [m] (right-hand string length)
+    var positionController = new PIDController({
+        getControllerInput: pulley.getPayloadPosition.bind(pulley),
+        setControllerOutput: pulley.correctForControllerInput.bind(pulley),
+
+        setPointMin: 1.8,                  // [m] (right-hand string length)
+        setPointMax: 2.3,                  // [m] (right-hand string length)
+
         isOn: true,
 
         // gains
         kP: .1,
-        kI: .00000,
+        kI: .0000,
         kD: 3
+    });
+
+    var positionStabilizer = new PIDController({
+        getControllerInput: pulley.getPositionStabilizerInput.bind(pulley),
+        setControllerOutput: pulley.correctForControllerInput.bind(pulley),
+
+        setPointMin: -.1,
+        setPointMax: .1,
+
+        isOn: true,
+
+        // gains
+        kP: .1,
+        kI: .0000,
+        kD: 1
     });
 
 
@@ -1756,7 +1797,7 @@
         $scope.world = world;
         $scope.pulley = pulley;
         $scope.rendering = Rendering;
-        $scope.PIDController = PIDController;
+        $scope.positionController = positionController;
 
         $scope.startStopLoop = function() {
             Rendering.world.startStopLoop();
@@ -1779,7 +1820,7 @@
         };
 
         $scope.toggleController = function() {
-            PIDController.isOn = !PIDController.isOn;
+            positionController.isOn = !positionController.isOn;
         };
 
 
@@ -1852,10 +1893,14 @@
     var pulleyCenter = pulley.diskPosition;
     var pulleyLeft = pulleyCenter[0] - pulley.diskRadius;
 
-    var setPointMarkerW = 1;
-    Rendering.setPointMarker = AddLine(pulleyLeft - setPointMarkerW/2, pulley.getHeightForPayloadPosition(PIDController.setPoint), setPointMarkerW, 0, 
-            .01, 'set point', {
-        borderColor: '#FF0000'
+    var positionControllerMarkerW = 1;
+    var positionControllerMarkerH = Math.abs(positionController.setPointMax - positionController.setPointMin);
+    var positionControllerMarkerX = pulleyLeft - positionControllerMarkerW/2;
+    var positionControllerMarkerY = Math.min(pulley.getHeightForPayloadPosition(positionController.setPointMin), pulley.getHeightForPayloadPosition(positionController.setPointMax));
+
+    Rendering.positionControllerMarker = AddBox(positionControllerMarkerX, positionControllerMarkerY, positionControllerMarkerW, positionControllerMarkerH, 'set point', {
+        shapeColor: 'rgba(0, 100, 100, 0)',
+        borderColor: '#FF0000',
     });
 
     setTimeout(function() {

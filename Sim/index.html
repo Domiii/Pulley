@@ -96,10 +96,12 @@ a: {{pulley.physics.a.toFixed(2)}}
 B: {{pulley.physics.B.toFixed(2)}}
 W: {{pulley.physics.W.toFixed(2)}}
 D: {{pulley.physics.D.toFixed(2)}}
-F: {{pulley.physics.F.toFixed(2)}}</pre>
+F: {{pulley.physics.F.toFixed(2)}}
+position: {{pulley.physics.payloadPosition}}</pre>
 
             <pre>PID:
-{{squishy.objToString(PIDController.physics)}}</pre>
+target position: {{squishy.objToString(positionController.setPointMin) + ' - ' + squishy.objToString(positionController.setPointMax)}}
+{{squishy.objToString(positionController.physics)}}</pre>
         </div>
     </div>
 </body>

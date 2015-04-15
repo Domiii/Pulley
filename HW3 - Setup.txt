@@ -1,0 +1,8 @@
+- Pulley, string + hooks setup (on fan)
+	- Buy string and hooks
+- Counterweight - bottle of water
+- Get balloon and check pump speed
+- Get valve
+- Soder balloon + valve controllers
+- Controller on Arduino (Domi)
+- Boxing (use pump box)
